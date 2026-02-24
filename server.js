@@ -1,52 +1,57 @@
+require("dotenv").config();
 const express = require("express");
-const axios = require("axios");
-const cors = require("cors");
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { RSI, EMA } = require("technicalindicators");
+const bcrypt = require("bcryptjs");
+const cors = require("cors");
 
 const app = express();
-app.use(cors());
 app.use(express.json());
+app.use(cors());
 
-const SECRET = "sinais_pro_secret";
+const SECRET = "SUA_CHAVE_SUPER_SECRETA";
 
-// Simulação banco de dados
-let usuarios = [];
+// Banco fake em memória (depois podemos usar Mongo)
+let users = [];
 
-// ================== LOGIN ==================
-
+/* ============================= */
+/* REGISTRO */
+/* ============================= */
 app.post("/register", async (req, res) => {
   const { email, password } = req.body;
 
-  const userExist = usuarios.find((u) => u.email === email);
-  if (userExist)
+  const userExist = users.find((u) => u.email === email);
+  if (userExist) {
     return res.status(400).json({ error: "Usuário já existe" });
+  }
 
   const hash = await bcrypt.hash(password, 10);
 
-  usuarios.push({
+  const newUser = {
+    id: users.length + 1,
     email,
     password: hash,
-    vip: true,
-  });
+    vip: false, // 🔥 começa sem VIP
+  };
+
+  users.push(newUser);
 
   res.json({ message: "Usuário criado com sucesso" });
 });
 
+/* ============================= */
+/* LOGIN */
+/* ============================= */
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const user = usuarios.find((u) => u.email === email);
-  if (!user)
-    return res.status(400).json({ error: "Usuário não encontrado" });
+  const user = users.find((u) => u.email === email);
+  if (!user) return res.status(400).json({ error: "Usuário não encontrado" });
 
   const valid = await bcrypt.compare(password, user.password);
-  if (!valid)
-    return res.status(400).json({ error: "Senha inválida" });
+  if (!valid) return res.status(400).json({ error: "Senha inválida" });
 
   const token = jwt.sign(
-    { email: user.email, vip: user.vip },
+    { id: user.id, email: user.email, vip: user.vip },
     SECRET,
     { expiresIn: "7d" }
   );
@@ -54,101 +59,53 @@ app.post("/login", async (req, res) => {
   res.json({ token });
 });
 
-// ================== MIDDLEWARE ==================
-
+/* ============================= */
+/* MIDDLEWARE AUTENTICAÇÃO */
+/* ============================= */
 function auth(req, res, next) {
-  const header = req.headers.authorization;
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "Token ausente" });
 
-  if (!header)
-    return res.status(401).json({ error: "Token ausente" });
-
-  const token = header.split(" ")[1];
+  const token = authHeader.split(" ")[1];
 
   try {
     const decoded = jwt.verify(token, SECRET);
     req.user = decoded;
     next();
   } catch {
-    return res.status(401).json({ error: "Token inválido" });
+    res.status(401).json({ error: "Token inválido" });
   }
 }
 
-// ================== INDICADORES ==================
-
-async function calcularIndicadores(symbol) {
-  try {
-    const response = await axios.get(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=100`
-    );
-
-    const closes = response.data.map((c) => parseFloat(c[4]));
-
-    const rsi = RSI.calculate({ values: closes, period: 14 });
-    const ema9 = EMA.calculate({ values: closes, period: 9 });
-    const ema21 = EMA.calculate({ values: closes, period: 21 });
-
-    const ultimoRSI = rsi[rsi.length - 1];
-    const ultimaEMA9 = ema9[ema9.length - 1];
-    const ultimaEMA21 = ema21[ema21.length - 1];
-
-    let sinal = "NEUTRO";
-    if (ultimoRSI < 30) sinal = "COMPRA";
-    if (ultimoRSI > 70) sinal = "VENDA";
-
-    let tendencia = "LATERAL";
-    if (ultimaEMA9 > ultimaEMA21) tendencia = "ALTA";
-    if (ultimaEMA9 < ultimaEMA21) tendencia = "BAIXA";
-
-    return {
-      symbol,
-      rsi: ultimoRSI.toFixed(2),
-      sinal,
-      tendencia,
-    };
-  } catch {
-    return null;
+/* ============================= */
+/* ROTA VIP PROTEGIDA */
+/* ============================= */
+app.get("/vip", auth, (req, res) => {
+  if (!req.user.vip) {
+    return res.status(403).json({ error: "Acesso apenas para VIP" });
   }
-}
 
-// ================== FREE ==================
+  const moedas = [
+    { symbol: "BTCUSDT", rsi: 25.3, tendencia: "BAIXA", sinal: "COMPRA" },
+    { symbol: "ETHUSDT", rsi: 40.2, tendencia: "ALTA", sinal: "NEUTRO" },
+  ];
 
-app.get("/free", async (req, res) => {
-  const response = await axios.get(
-    "https://api.binance.com/api/v3/ticker/24hr"
-  );
-
-  const moedas = response.data
-    .filter((m) => m.symbol.endsWith("USDT"))
-    .slice(0, 30);
-
-  const resultados = await Promise.all(
-    moedas.map((m) => calcularIndicadores(m.symbol))
-  );
-
-  res.json(resultados.filter(Boolean));
+  res.json(moedas);
 });
 
-// ================== VIP PROTEGIDO ==================
+/* ============================= */
+/* ATIVAR VIP (SIMULA PAGAMENTO) */
+/* ============================= */
+app.post("/ativar-vip", auth, (req, res) => {
+  const user = users.find((u) => u.id === req.user.id);
 
-app.get("/vip", auth, async (req, res) => {
-  if (!req.user.vip)
-    return res.status(403).json({ error: "Acesso VIP necessário" });
+  if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
 
-  const response = await axios.get(
-    "https://api.binance.com/api/v3/ticker/24hr"
-  );
+  user.vip = true;
 
-  const moedas = response.data
-    .filter((m) => m.symbol.endsWith("USDT"))
-    .slice(0, 100);
-
-  const resultados = await Promise.all(
-    moedas.map((m) => calcularIndicadores(m.symbol))
-  );
-
-  res.json(resultados.filter(Boolean));
+  res.json({ message: "VIP ativado com sucesso" });
 });
 
 app.listen(3000, () => {
-  console.log("Servidor rodando com login 🚀");
+  console.log("Servidor rodando com sistema VIP 💎");
 });
